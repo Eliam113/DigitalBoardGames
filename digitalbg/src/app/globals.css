@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 :root {
   --background: #ffffff;
@@ -23,18 +21,4 @@ body {
   background: var(--background);
   font-family: Arial, Helvetica, sans-serif;
   color: black; /* ensure text is always black */
-}
-
-/* globally style buttons to match homepage red appearance */
-@layer base {
-  button {
-    background-color: #dc2626; /* red-600 */
-    color: #ffffff;
-    border-radius: 0.375rem;
-    padding: 0.5rem 1rem;
-  }
-
-  button:hover {
-    background-color: #b91c1c; /* red-700 */
-  }
 }
