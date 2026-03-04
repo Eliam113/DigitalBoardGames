@@ -1,82 +1,118 @@
-// basic express + websocket stub for lobby management
-// this is placeholder logic; more detailed game code will be added later
-
-const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
+import express from "express";
+import http from "http";
+import cors from "cors";
+import { Server } from "socket.io";
 
 const app = express();
+app.use(cors({ origin: true, credentials: true }));
+
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const io = new Server(server, {
+  cors: { origin: true, credentials: true },
+});
 
-// simple in-memory lobby map: pin -> { host, members: Set(ws) }
-const lobbies = new Map();
+const lobbies = new Map(); // pin -> { hostName: string, members: Set<{id,name}> }
 
-wss.on("connection", function connection(ws) {
-  ws.on("message", function message(raw) {
-    let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch (e) {
-      console.warn("received non-json message", raw);
+function makePin() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function lobbyPayload(lobby) {
+  return {
+    hostName: lobby.hostName,
+    members: [...lobby.members].map((m) => ({ name: m.name })),
+  };
+}
+
+io.on("connection", (socket) => {
+  socket.on("createLobby", ({ username }) => {
+    if (!username) return socket.emit("error", "Username is required.");
+
+    let pin = makePin();
+    while (lobbies.has(pin)) pin = makePin();
+
+    const lobby = {
+      hostName: username,
+      members: new Set([{ id: socket.id, name: username }]),
+    };
+
+    lobbies.set(pin, lobby);
+    socket.join(pin);
+    socket.data.pin = pin;
+    socket.data.username = username;
+
+    socket.emit("lobbyCreated", { pin, ...lobbyPayload(lobby) });
+  });
+
+  socket.on("joinLobby", ({ pin, username }) => {
+    const lobby = lobbies.get(pin);
+    if (!lobby) return socket.emit("error", "Lobby not found.");
+    if (!username) return socket.emit("error", "Username is required.");
+
+    lobby.members.add({ id: socket.id, name: username });
+    socket.join(pin);
+    socket.data.pin = pin;
+    socket.data.username = username;
+
+    socket.emit("lobbyJoined", lobbyPayload(lobby));
+    io.to(pin).emit("lobbyUpdated", lobbyPayload(lobby));
+  });
+
+  socket.on("getLobbyState", ({ pin }) => {
+    const lobby = lobbies.get(pin);
+    if (!lobby) {
+      socket.emit("error", "Lobby not found.");
+      return;
+    }
+    socket.emit("lobbyState", lobbyPayload(lobby));
+  });
+
+  socket.on("subscribeLobby", ({ pin, username }) => {
+    const lobby = lobbies.get(pin);
+    if (!lobby) return socket.emit("error", "Lobby not found.");
+
+    socket.join(pin);
+    socket.data.pin = pin;
+    socket.data.username = username;
+
+    // upsert member by username (important after refresh/reconnect)
+    const members = [...lobby.members].filter((m) => m.name !== username);
+    members.push({ id: socket.id, name: username });
+    lobby.members = new Set(members);
+
+    io.to(pin).emit("lobbyUpdated", lobbyPayload(lobby));
+  });
+
+  socket.on("startGame", ({ pin }) => {
+    const lobby = lobbies.get(pin);
+    if (!lobby) return socket.emit("error", "Lobby not found.");
+
+    const caller = [...lobby.members].find((m) => m.id === socket.id);
+    if (!caller || caller.name !== lobby.hostName) {
+      return socket.emit("error", "Only host can start the game.");
+    }
+
+    io.to(pin).emit("gameStarted");
+  });
+
+  socket.on("disconnect", () => {
+    const pin = socket.data.pin;
+    if (!pin) return;
+    const lobby = lobbies.get(pin);
+    if (!lobby) return;
+
+    lobby.members = new Set([...lobby.members].filter((m) => m.id !== socket.id));
+
+    if (lobby.members.size === 0) {
+      lobbies.delete(pin);
       return;
     }
 
-    switch (msg.type) {
-      case "create": {
-        const { pin, username } = msg;
-        lobbies.set(pin, { host: username, members: new Set([ws]) });
-        ws.send(JSON.stringify({ type: "created", pin }));
-        break;
-      }
-      case "join": {
-        const { pin, username } = msg;
-        const lobby = lobbies.get(pin);
-        if (lobby) {
-          lobby.members.add(ws);
-          // broadcast new member to others
-          lobby.members.forEach((client) => {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(
-                JSON.stringify({ type: "member-joined", username })
-              );
-            }
-          });
-          ws.send(JSON.stringify({ type: "joined", pin }));
-        } else {
-          ws.send(JSON.stringify({ type: "error", message: "Lobby not found" }));
-        }
-        break;
-      }
-      case "start": {
-        const { pin } = msg;
-        const lobby = lobbies.get(pin);
-        if (lobby) {
-          // notify everyone lobby starting
-          lobby.members.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({ type: "start" }));
-            }
-          });
-        }
-        break;
-      }
-      default:
-        console.warn("unknown message type", msg.type);
+    if (![...lobby.members].some((m) => m.name === lobby.hostName)) {
+      lobby.hostName = [...lobby.members][0].name;
     }
-  });
 
-  ws.on("close", () => {
-    // cleanup: remove from any lobby
-    for (const [pin, lobby] of lobbies.entries()) {
-      if (lobby.members.has(ws)) {
-        lobby.members.delete(ws);
-        // if host left, choose another or delete lobby
-        if (lobby.members.size === 0) {
-          lobbies.delete(pin);
-        }
-      }
-    }
+    io.to(pin).emit("lobbyUpdated", lobbyPayload(lobby));
   });
 });
 

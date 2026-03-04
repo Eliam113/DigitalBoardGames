@@ -2,6 +2,15 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import io, { Socket } from "socket.io-client";
+
+let socket: ReturnType<typeof io> | null = null;
+function getSocket(): ReturnType<typeof io> {
+  if (!socket) {
+    socket = io("http://localhost:3001");
+  }
+  return socket;
+}
 
 export default function JoinPage() {
   const [pin, setPin] = useState("");
@@ -22,11 +31,23 @@ export default function JoinPage() {
       alert("Please enter a lobby pin.");
       return;
     }
-    router.push(
-      `/lobby?username=${encodeURIComponent(username)}&pin=${encodeURIComponent(
-        pin
-      )}&host=false`
-    );
+    const socket = getSocket();
+    socket.emit("joinLobby", { pin, username });
+    socket.on("lobbyJoined", () => {
+      router.push(
+        `/lobby?username=${encodeURIComponent(username)}&pin=${encodeURIComponent(
+          pin
+        )}&host=false`
+      );
+    });
+    socket.on("error", (msg: string) => {
+      alert(msg);
+      router.replace("/join?username=" + encodeURIComponent(username));
+    });
+    return () => {
+      socket.off("lobbyJoined");
+      socket.off("error");
+    };
   };
 
   return (

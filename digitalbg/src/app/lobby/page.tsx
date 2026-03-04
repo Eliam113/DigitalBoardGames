@@ -1,63 +1,86 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import {
-  getLobbyMembers,
-  joinLobby,
-  isHost as checkHost,
-  getHost,
-} from "../../lib/lobby";
+import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import io from "socket.io-client";
+
+let socket: ReturnType<typeof io> | null = null;
+function getSocket(): ReturnType<typeof io> {
+  if (!socket) {
+    socket = io("http://localhost:3001");
+  }
+  return socket;
+}
+
+interface Lobby {
+  members: { name: string }[];
+  hostName: string;
+}
 
 export default function LobbyPage() {
   const searchParams = useSearchParams();
   const username = searchParams.get("username") || "";
   const pin = searchParams.get("pin") || "";
-  const hostParam = searchParams.get("host") === "true";
+  const router = useRouter();
+
   const [members, setMembers] = useState<string[]>([]);
   const [host, setHost] = useState<string | null>(null);
 
   useEffect(() => {
     if (!pin || !username) {
-      // navigate back if data missing
-      window.location.href = "/";
+      router.replace("/");
       return;
     }
 
-    if (hostParam) {
-      // since the query param told us we are the host, ensure lobby exists
-      joinLobby(pin, username);
-      setHost(username);
-    } else {
-      // joining an existing lobby
-      joinLobby(pin, username);
-    }
+    const socket = getSocket();
 
-    const storedMembers = getLobbyMembers(pin);
-    setMembers(storedMembers);
-    setHost(getHost(pin));
-
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === `lobby_${pin}`) {
-        setMembers(getLobbyMembers(pin));
-      }
-      if (e.key === `host_${pin}`) {
-        setHost(getHost(pin));
-      }
+    const applyLobby = (lobby: Lobby) => {
+      setMembers(lobby.members.map((m) => m.name));
+      setHost(lobby.hostName);
     };
 
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, [pin, username, hostParam]);
+    const subscribe = () => {
+    socket.emit("subscribeLobby", { pin, username });
+  };
+
+    socket.on("connect", subscribe);
+    socket.on("lobbyJoined", applyLobby);
+    socket.on("lobbyUpdated", applyLobby);
+    socket.on("lobbyState", applyLobby);
+
+    socket.on("gameStarted", () => {
+      router.replace("/werewolf?pin=" + encodeURIComponent(pin));
+    });
+
+    socket.on("error", (msg: string) => {
+      alert(msg);
+      router.replace("/join?username=" + encodeURIComponent(username));
+    });
+
+    subscribe();
+    // request current lobby snapshot so UI is never empty on first load
+    socket.emit("getLobbyState", { pin });
+
+    return () => {
+      socket.off("connect", subscribe);
+      socket.off("lobbyJoined", applyLobby);
+      socket.off("lobbyUpdated", applyLobby);
+      socket.off("lobbyState", applyLobby);
+      socket.off("gameStarted");
+      socket.off("error");
+    };
+  }, [pin, username, router]);
 
   const startGame = () => {
-    alert("Starting game (placeholder)");
+    const socket = getSocket();
+    socket.emit("startGame", { pin });
   };
 
   if (!pin) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <p>Invalid lobby. Go back to the <a href="/">home page</a>.</p>
+        <p>Invalid lobby. Go back to the <Link href="/">home page</Link>.</p>
       </div>
     );
   }
